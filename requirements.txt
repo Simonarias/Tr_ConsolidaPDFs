@@ -1,1 +1,6 @@
 pypdf
+pillow
+python-docx
+python-pptx
+openpyxl
+reportlab
