@@ -3,8 +3,10 @@ import os
 import shutil
 import subprocess
 import tempfile
+import functools
 from PIL import Image
 from pypdf import PdfReader, PdfWriter
+import streamlit as st
 
 # ReportLab imports
 from reportlab.lib.pagesizes import A4, landscape
@@ -35,18 +37,22 @@ WORD_EXTENSIONS = {'.docx'}
 EXCEL_EXTENSIONS = {'.xlsx'}
 PPT_EXTENSIONS = {'.pptx'}
 
-def _convert_with_libreoffice(input_file_path, output_dir):
-    """Convierte un archivo de Office (docx, xlsx, pptx) a PDF usando LibreOffice en modo headless."""
+@functools.lru_cache(maxsize=1)
+def _get_libreoffice_cmd():
+    """Busca y memoriza la ruta del ejecutable de LibreOffice."""
     executables = [
         'libreoffice', 'soffice',
         r'C:\Program Files\LibreOffice\program\soffice.exe',
         r'C:\Program Files (x86)\LibreOffice\program\soffice.exe'
     ]
-    cmd = None
     for exe in executables:
         if shutil.which(exe) or os.path.exists(exe):
-            cmd = exe
-            break
+            return exe
+    return None
+
+def _convert_with_libreoffice(input_file_path, output_dir):
+    """Convierte un archivo de Office (docx, xlsx, pptx) a PDF usando LibreOffice en modo headless."""
+    cmd = _get_libreoffice_cmd()
     if not cmd:
         return False
         
@@ -128,9 +134,9 @@ def convert_text_to_pdf(text_str, filename="Documento"):
     title_style = ParagraphStyle(
         'DocTitle',
         parent=styles['Heading1'],
-        fontSize=15,
+        fontSize=14,
         leading=18,
-        textColor=colors.HexColor('#4F46E5'),
+        textColor=colors.HexColor('#1E293B'),
         spaceAfter=12
     )
     
@@ -144,7 +150,7 @@ def convert_text_to_pdf(text_str, filename="Documento"):
     )
     
     story = []
-    story.append(Paragraph(f"📄 {filename}", title_style))
+    story.append(Paragraph(filename, title_style))
     story.append(Spacer(1, 10))
     
     lines = text_str.splitlines()
@@ -184,7 +190,6 @@ def _convert_docx_fallback_reportlab(docx_path_or_stream):
     story = []
     
     for p in doc.paragraphs:
-        # Extraer imágenes incrustadas en el párrafo
         embed_ids = p._element.xpath('.//a:blip/@r:embed')
         if embed_ids:
             for embed_id in embed_ids:
@@ -240,19 +245,14 @@ def _convert_docx_fallback_reportlab(docx_path_or_stream):
             story.append(Spacer(1, 10))
             
     if not story:
-        story.append(Paragraph("(Documento Word sin contenido de texto ni imágenes)", normal_style))
+        story.append(Paragraph("(Documento Word sin contenido)", normal_style))
 
     pdf_doc.build(story)
     buffer.seek(0)
     return buffer
 
 def convert_docx_to_pdf(file_stream):
-    """
-    Convierte un documento Word (.docx) a PDF.
-    Usa LibreOffice o Microsoft Word (win32com) si están disponibles para obtener fidelidad exacta (100%).
-    De lo contrario, recurre al motor interno basado en ReportLab y python-docx con extracción de imágenes.
-    """
-    # Guardar stream en archivo temporal
+    """Convierte un documento Word (.docx) a PDF."""
     with tempfile.NamedTemporaryFile(delete=False, suffix=".docx") as tmp_in:
         if hasattr(file_stream, 'read'):
             content = file_stream.read()
@@ -267,19 +267,16 @@ def convert_docx_to_pdf(file_stream):
     output_pdf_path = os.path.join(tmp_dir, "output.pdf")
 
     try:
-        # Intento 1: LibreOffice (Cross-platform / Hugging Face Spaces)
         if _convert_with_libreoffice(tmp_in_path, tmp_dir):
             if os.path.exists(output_pdf_path):
                 with open(output_pdf_path, 'rb') as f:
                     return io.BytesIO(f.read())
 
-        # Intento 2: MS Word via COM Automation (Windows local)
         if os.name == 'nt' and _convert_docx_with_win32com(tmp_in_path, output_pdf_path):
             if os.path.exists(output_pdf_path):
                 with open(output_pdf_path, 'rb') as f:
                     return io.BytesIO(f.read())
 
-        # Intento 3: Fallback en Python puro (python-docx + ReportLab con imágenes)
         return _convert_docx_fallback_reportlab(tmp_in_path)
 
     finally:
@@ -295,7 +292,7 @@ def convert_docx_to_pdf(file_stream):
                 pass
 
 def convert_xlsx_to_pdf(file_stream):
-    """Convierte un libro de Excel (.xlsx) a PDF con alta fidelidad si LibreOffice está presente."""
+    """Convierte un libro de Excel (.xlsx) a PDF."""
     with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as tmp_in:
         if hasattr(file_stream, 'read'):
             content = file_stream.read()
@@ -341,7 +338,7 @@ def convert_xlsx_to_pdf(file_stream):
     )
     styles = getSampleStyleSheet()
     
-    sheet_title_style = ParagraphStyle('SheetTitle', parent=styles['Heading2'], fontSize=13, leading=16, textColor=colors.HexColor('#1E3A8A'), spaceAfter=8)
+    sheet_title_style = ParagraphStyle('SheetTitle', parent=styles['Heading2'], fontSize=12, leading=15, textColor=colors.HexColor('#1E3A8A'), spaceAfter=8)
     cell_style = ParagraphStyle('Cell', parent=styles['Normal'], fontSize=8, leading=10)
     header_style = ParagraphStyle('HeaderCell', parent=styles['Normal'], fontSize=8, leading=10, fontName='Helvetica-Bold', textColor=colors.HexColor('#0F172A'))
     
@@ -349,7 +346,7 @@ def convert_xlsx_to_pdf(file_stream):
     
     for sheet_name in wb.sheetnames:
         ws = wb[sheet_name]
-        story.append(Paragraph(f"📊 Hoja: {sheet_name}", sheet_title_style))
+        story.append(Paragraph(f"Hoja: {sheet_name}", sheet_title_style))
         
         table_data = []
         for r_idx, row in enumerate(ws.iter_rows(values_only=True)):
@@ -384,7 +381,7 @@ def convert_xlsx_to_pdf(file_stream):
     return buffer
 
 def convert_pptx_to_pdf(file_stream):
-    """Convierte una presentación PowerPoint (.pptx) a PDF con alta fidelidad si LibreOffice está presente."""
+    """Convierte una presentación PowerPoint (.pptx) a PDF."""
     with tempfile.NamedTemporaryFile(delete=False, suffix=".pptx") as tmp_in:
         if hasattr(file_stream, 'read'):
             content = file_stream.read()
@@ -430,13 +427,13 @@ def convert_pptx_to_pdf(file_stream):
     )
     styles = getSampleStyleSheet()
     
-    slide_title_style = ParagraphStyle('SlideTitle', parent=styles['Heading1'], fontSize=16, leading=20, textColor=colors.HexColor('#2563EB'), spaceAfter=10)
+    slide_title_style = ParagraphStyle('SlideTitle', parent=styles['Heading1'], fontSize=15, leading=18, textColor=colors.HexColor('#1E293B'), spaceAfter=10)
     body_style = ParagraphStyle('SlideBody', parent=styles['Normal'], fontSize=11, leading=15, textColor=colors.HexColor('#1F2937'))
     
     story = []
     
     for idx, slide in enumerate(prs.slides):
-        story.append(Paragraph(f"🖥️ Diapositiva {idx + 1}", slide_title_style))
+        story.append(Paragraph(f"Diapositiva {idx + 1}", slide_title_style))
         for shape in slide.shapes:
             if shape.has_text_frame:
                 for paragraph in shape.text_frame.paragraphs:
@@ -454,59 +451,57 @@ def convert_pptx_to_pdf(file_stream):
     buffer.seek(0)
     return buffer
 
-def convert_file_to_pdf(file_obj, filename=None):
+@st.cache_data(show_spinner=False)
+def convert_file_bytes_to_pdf(file_bytes: bytes, filename: str) -> bytes:
+    """Convierte los bytes de un archivo a bytes de PDF. Caché en memoria para respuesta instantánea."""
+    ext = os.path.splitext(filename)[1].lower()
+    
+    if ext == '.pdf':
+        return file_bytes
+        
+    elif ext in IMAGE_EXTENSIONS:
+        return convert_image_to_pdf(io.BytesIO(file_bytes)).getvalue()
+        
+    elif ext in WORD_EXTENSIONS:
+        return convert_docx_to_pdf(io.BytesIO(file_bytes)).getvalue()
+        
+    elif ext in EXCEL_EXTENSIONS:
+        return convert_xlsx_to_pdf(io.BytesIO(file_bytes)).getvalue()
+        
+    elif ext in PPT_EXTENSIONS:
+        return convert_pptx_to_pdf(io.BytesIO(file_bytes)).getvalue()
+        
+    elif ext in TEXT_EXTENSIONS:
+        try:
+            content = file_bytes.decode('utf-8', errors='replace')
+        except Exception:
+            content = str(file_bytes)
+        return convert_text_to_pdf(content, filename=filename).getvalue()
+        
+    else:
+        try:
+            content = file_bytes.decode('utf-8', errors='replace')
+            return convert_text_to_pdf(content, filename=filename).getvalue()
+        except Exception as e:
+            raise ValueError(f"Formato de archivo '{ext}' no soportado: {e}")
+
+def convert_file_to_pdf(file_obj, filename=None) -> bytes:
     """
-    Función principal que detecta el tipo de archivo y retorna un io.BytesIO con el PDF generado.
-    Si el archivo ya es PDF, retorna sus bytes.
+    Función principal que recibe un archivo u objeto tipo file, extrae sus bytes
+    y delega a la función optimizada con caché. Retorna bytes del PDF.
     """
     if filename is None:
         filename = getattr(file_obj, 'name', 'documento')
         
-    ext = os.path.splitext(filename)[1].lower()
-    
-    if ext == '.pdf':
-        if hasattr(file_obj, 'read'):
-            content = file_obj.read()
-            if hasattr(file_obj, 'seek'):
-                file_obj.seek(0)
-            return io.BytesIO(content)
-        return io.BytesIO(file_obj)
-        
-    elif ext in IMAGE_EXTENSIONS:
-        return convert_image_to_pdf(file_obj)
-        
-    elif ext in WORD_EXTENSIONS:
-        return convert_docx_to_pdf(file_obj)
-        
-    elif ext in EXCEL_EXTENSIONS:
-        return convert_xlsx_to_pdf(file_obj)
-        
-    elif ext in PPT_EXTENSIONS:
-        return convert_pptx_to_pdf(file_obj)
-        
-    elif ext in TEXT_EXTENSIONS:
-        if hasattr(file_obj, 'read'):
-            content = file_obj.read()
-            if isinstance(content, bytes):
-                content = content.decode('utf-8', errors='replace')
-            if hasattr(file_obj, 'seek'):
-                file_obj.seek(0)
-        else:
-            content = str(file_obj)
-        return convert_text_to_pdf(content, filename=filename)
-        
+    if isinstance(file_obj, bytes):
+        file_bytes = file_obj
+    elif hasattr(file_obj, 'getvalue'):
+        file_bytes = file_obj.getvalue()
+    elif hasattr(file_obj, 'read'):
+        file_bytes = file_obj.read()
+        if hasattr(file_obj, 'seek'):
+            file_obj.seek(0)
     else:
-        # Intento genérico de leer como texto plano
-        try:
-            if hasattr(file_obj, 'read'):
-                content = file_obj.read()
-                if isinstance(content, bytes):
-                    content = content.decode('utf-8', errors='replace')
-                if hasattr(file_obj, 'seek'):
-                    file_obj.seek(0)
-            else:
-                content = str(file_obj)
-            return convert_text_to_pdf(content, filename=filename)
-        except Exception as e:
-            raise ValueError(f"Formato de archivo '{ext}' no soportado para conversión: {e}")
+        file_bytes = str(file_obj).encode('utf-8')
 
+    return convert_file_bytes_to_pdf(file_bytes, filename)
